@@ -61,10 +61,33 @@ sources = [
 
 cxx_flags = ["-O3"]
 libraries = ["hiprtc", "amdhip64", "c10", "torch", "torch_python"]
-extra_link_args = ["-Wl,-rpath,$ORIGIN/../../torch/lib", f"-L/usr/lib/{arch}-linux-gnu"]
+extra_link_args = ["-Wl,-rpath,$ORIGIN/../../torch/lib", "-L/opt/rocm/core/lib", f"-L/usr/lib/{arch}-linux-gnu"]
 
 default_target = "gfx942"
 amdgpu_target = os.environ.get("AMDGPU_TARGET", default_target)
+
+rocm_arch_config = {
+    "gfx942": {
+        "fp8_macro": "-DHIP_FP8_TYPE_FNUZ",
+        "topk_dynamic_smem_bytes": 48 * 1024,
+        "wavefront_size": 64,
+    },
+    "gfx950": {
+        "fp8_macro": "-DHIP_FP8_TYPE_E4M3",
+        "topk_dynamic_smem_bytes": 128 * 1024,
+        "wavefront_size": 64,
+    },
+    "gfx1250": {
+        "fp8_macro": "-DHIP_FP8_TYPE_E4M3",
+        "topk_dynamic_smem_bytes": 128 * 1024,
+        "wavefront_size": 64,
+    },
+    "gfx1201": {
+        "fp8_macro": "-DHIP_FP8_TYPE_E4M3",
+        "topk_dynamic_smem_bytes": 48 * 1024,
+        "wavefront_size": 32,
+    },
+}
 
 if torch.cuda.is_available():
     try:
@@ -74,21 +97,17 @@ if torch.cuda.is_available():
 else:
     print(f"Warning: torch.cuda not available. Using default target: {amdgpu_target}")
 
-if amdgpu_target not in ["gfx942", "gfx950", "gfx1250"]:
+if amdgpu_target not in rocm_arch_config:
     print(
-        f"Warning: Unsupported GPU architecture detected '{amdgpu_target}'. Expected 'gfx942', 'gfx950', or 'gfx1250'."
+        f"Warning: Unsupported GPU architecture detected '{amdgpu_target}'. "
+        f"Expected one of: {', '.join(rocm_arch_config)}."
     )
     sys.exit(1)
 
-fp8_macro = (
-    "-DHIP_FP8_TYPE_FNUZ" if amdgpu_target == "gfx942" else "-DHIP_FP8_TYPE_E4M3"
-)
-
-# Dynamic shared-memory budget for the TopK kernels.
-# - gfx942 (MI300/MI325): LDS is typically 64KB per workgroup -> keep dynamic smem <= ~48KB
-#   (leaves room for static shared allocations in the kernel).
-# - gfx95x (MI350) and gfx1250: LDS is larger -> allow the original 128KB dynamic smem.
-topk_dynamic_smem_bytes = 48 * 1024 if amdgpu_target == "gfx942" else 32 * 1024 * 4
+arch_config = rocm_arch_config[amdgpu_target]
+fp8_macro = arch_config["fp8_macro"]
+topk_dynamic_smem_bytes = arch_config["topk_dynamic_smem_bytes"]
+wavefront_size = arch_config["wavefront_size"]
 
 hipcc_flags = [
     "-DNDEBUG",
@@ -97,11 +116,12 @@ hipcc_flags = [
     "-Xcompiler",
     "-fPIC",
     "-std=c++17",
-    f"--amdgpu-target={amdgpu_target}",
+    f"--offload-arch={amdgpu_target}",
     "-DENABLE_BF16",
     "-DENABLE_FP8",
     fp8_macro,
     f"-DSGL_TOPK_DYNAMIC_SMEM_BYTES={topk_dynamic_smem_bytes}",
+    f"-DSGLANG_WAVEFRONT_SIZE={wavefront_size}",
 ]
 
 ext_modules = [
