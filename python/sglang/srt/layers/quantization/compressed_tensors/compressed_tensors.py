@@ -50,6 +50,8 @@ from sglang.srt.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsW8A8Int8,
     CompressedTensorsW8A16Fp8,
     CompressedTensorsWNA16,
+    CompressedTensorsWNA16Triton,
+    CompressedTensorsWNA16HIP,
     CompressedTensorsWNA16MoE,
     CompressedTensorsWNA16TritonMoE,
     NPUCompressedTensorsW4A8Int8DynamicMoE,
@@ -72,6 +74,10 @@ from sglang.srt.utils import is_cuda, is_hip, is_npu
 _is_cuda = is_cuda()
 _is_npu = is_npu()
 _is_hip = is_hip()
+try:
+    _arch_list = torch.cuda.get_arch_list()
+except Exception:
+    _arch_list = []
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import (
@@ -632,13 +638,32 @@ class CompressedTensorsConfig(QuantizationConfig):
                 quant_format == CompressionFormat.pack_quantized.value
                 and weight_quant.num_bits in WNA16_SUPPORTED_BITS
             ):
-                return CompressedTensorsWNA16(
-                    num_bits=weight_quant.num_bits,
-                    strategy=weight_quant.strategy,
-                    group_size=weight_quant.group_size,
-                    symmetric=weight_quant.symmetric,
-                    actorder=weight_quant.actorder,
-                )
+                if _is_hip:
+                    # R9700 (gfx1201) uses the fused WMMA HIP scheme; other
+                    # HIP targets fall back to on-the-fly dequant + matmul.
+                    if "gfx1201" in _arch_list:
+                        return CompressedTensorsWNA16HIP(
+                            num_bits=weight_quant.num_bits,
+                            strategy=weight_quant.strategy,
+                            group_size=weight_quant.group_size,
+                            symmetric=weight_quant.symmetric,
+                            actorder=weight_quant.actorder,
+                        )
+                    return CompressedTensorsWNA16Triton(
+                        num_bits=weight_quant.num_bits,
+                        strategy=weight_quant.strategy,
+                        group_size=weight_quant.group_size,
+                        symmetric=weight_quant.symmetric,
+                        actorder=weight_quant.actorder,
+                    )
+                else:
+                    return CompressedTensorsWNA16(
+                        num_bits=weight_quant.num_bits,
+                        strategy=weight_quant.strategy,
+                        group_size=weight_quant.group_size,
+                        symmetric=weight_quant.symmetric,
+                        actorder=weight_quant.actorder,
+                    )
             else:
                 raise ImportError(
                     "Other method (CompressedTensorsW4A16Sparse24) is not supported now"
