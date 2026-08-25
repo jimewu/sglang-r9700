@@ -590,10 +590,16 @@ def get_amdgpu_memory_capacity():
             raise RuntimeError(f"rocm-smi error: {result.stderr.strip()}")
 
         # Parse the output to extract memory values in MiB
-        memory_values = [
-            float(mem.split("(")[0].strip()) / 1024
-            for mem in result.stdout.strip().split("\n")
-        ]
+        lines = result.stdout.strip().split("\n")
+        memory_values = []
+        for mem in lines:
+            mem = mem.strip()
+            if not mem:
+                continue
+            try:
+                memory_values.append(float(mem.split("(")[0].strip()) / 1024)
+            except ValueError:
+                continue
 
         if not memory_values:
             raise ValueError("No GPU memory values found.")
@@ -601,10 +607,20 @@ def get_amdgpu_memory_capacity():
         # Return the minimum memory value
         return min(memory_values)
 
-    except FileNotFoundError:
-        raise RuntimeError(
-            "rocm-smi not found. Ensure AMD ROCm drivers are installed and accessible."
-        )
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        import warnings
+        warnings.warn(f"rocminfo failed: {e}. Falling back to torch.cuda.mem_get_info().")
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "Cannot determine AMD GPU memory: rocminfo failed and torch.cuda is unavailable."
+            )
+        memory_values = []
+        for i in range(torch.cuda.device_count()):
+            total = torch.cuda.mem_get_info(i)[1] // 1024 // 1024
+            memory_values.append(total)
+        if not memory_values:
+            raise RuntimeError("No CUDA devices found.")
+        return min(memory_values)
 
 
 def get_device_sm():
