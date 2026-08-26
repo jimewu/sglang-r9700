@@ -37,12 +37,18 @@ _OP = None
 
 
 def _get_op():
-    """Lazily import the r9700_w4a16 WMMA custom op (compiled for gfx1201)."""
+    """Lazily import the r9700_w4a16 custom ops (compiled for gfx1201).
+
+    Returns:
+        (prefill_op, decode_op):
+            prefill_op: mmq_q4_gemm(x, w_packed, scales, w_zeros, out, version)
+            decode_op:  decode_mmq_q4_gemm(x, w_packed, w_scales, w_zeros, out)
+    """
     global _OP
     if _OP is None:
         import r9700_w4a16
 
-        _OP = r9700_w4a16.mmq_q4_gemm
+        _OP = (r9700_w4a16.mmq_q4_gemm, r9700_w4a16.decode_mmq_q4_gemm)
     return _OP
 
 
@@ -120,8 +126,15 @@ class CompressedTensorsWNA16HIP(CompressedTensorsLinearScheme):
                     p.data.contiguous(), requires_grad=False))
 
     def apply_weights(self, layer, x, bias=None):
-        """Fused WMMA GEMM via the r9700_w4a16 custom op."""
-        op = _get_op()
+        """Fused W4A16 GEMM via the r9700_w4a16 custom op.
+
+        Protocol:
+            M == 1 (decode):  decode_mmq_q4_gemm — single-launch WMMA,
+                               no activation quant pre-kernel.
+            M  > 1 (prefill): mmq_q4_gemm with version=1 — fused WMMA
+                               with per-row INT8 activation quant pre-kernel.
+        """
+        prefill_op, decode_op = _get_op()
 
         w_q = getattr(layer, self.w_q_name)
         w_s = getattr(layer, self.w_s_name)
@@ -129,7 +142,6 @@ class CompressedTensorsWNA16HIP(CompressedTensorsLinearScheme):
 
         M, K = x.shape
         N = w_q.shape[0]
-        ng = w_s.shape[1]
 
         # Kernel reads fp16 activations and fp16 scales.
         x_fp16 = x if x.dtype == torch.float16 else x.half()
@@ -141,7 +153,12 @@ class CompressedTensorsWNA16HIP(CompressedTensorsLinearScheme):
         w_zeros = w_zp.data if w_zp is not None else torch.empty(0, device=x.device)
         out = torch.empty((M, N), dtype=torch.float16, device=x.device)
 
-        op(x_fp16, w_q.data, w_s_fp16, w_zeros, out, 1)
+        if M == 1:
+            # Decode path: single-launch decode kernel, no activation quant.
+            decode_op(x_fp16, w_q.data, w_s_fp16, w_zeros, out)
+        else:
+            # Prefill path: fused WMMA with per-row INT8 activation quant.
+            prefill_op(x_fp16, w_q.data, w_s_fp16, w_zeros, out, 1)
 
         # Output is fp16 native; cast to activation dtype (bf16 for this model).
         if x.dtype != torch.float16:
