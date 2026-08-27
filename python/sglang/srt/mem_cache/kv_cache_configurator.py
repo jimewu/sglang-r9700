@@ -260,6 +260,23 @@ class KVCacheConfigurator:
         quant_method.load_scales_from_model(self.model)
         return quant_method
 
+    def _is_fp8_kv_cache_dtype(self) -> bool:
+        """Check if the configured KV cache dtype is an FP8 type."""
+        return self.kv_cache_dtype in (
+            torch.float8_e4m3fn,
+            torch.float8_e4m3fnuz,
+            getattr(torch, "float8_e5m2", None),
+        )
+
+    def _build_fp8_quant_method(self, *, num_layers: int):
+        if not self._is_fp8_kv_cache_dtype():
+            return None
+        from sglang.srt.layers.quantization.fp4_kv_cache_quant_method import (
+            Fp8KVCacheMethod,
+        )
+
+        return Fp8KVCacheMethod(num_layers=num_layers, device=self.device)
+
     def configure(self, *, pre_model_load_memory: int) -> KVCacheConfigResult:
         """Apply a resolved MemoryPoolConfig and initialize pools."""
         if not self.spec_algorithm.is_none() and self.is_draft_worker:
@@ -1046,6 +1063,10 @@ class KVCacheConfigurator:
                     quant_method = self._build_fp4_quant_method(
                         num_layers=self.layer_info.num_effective_layers
                     )
+                elif self._is_fp8_kv_cache_dtype():
+                    quant_method = self._build_fp8_quant_method(
+                        num_layers=self.layer_info.num_effective_layers
+                    )
                 token_to_kv_pool = self._build_mha_kv_pool(
                     max_total_num_tokens=sizes.max_total_num_tokens,
                     mha_pool_class=mha_pool_class,
@@ -1522,6 +1543,10 @@ class KVCacheConfigurator:
         quant_method = self._build_fp4_quant_method(
             num_layers=len(full_attention_layer_ids)
         )
+        if quant_method is None and self._is_fp8_kv_cache_dtype():
+            quant_method = self._build_fp8_quant_method(
+                num_layers=len(full_attention_layer_ids)
+            )
         # MXFP8 KV cache needs the block-scaled pool (data + UE8M0 scale
         # buffers) for the full-attention layers, same as the SWA branch.
         full_pool_class = (

@@ -41,6 +41,8 @@ from typing import Iterable, Optional
 import torch
 from torch import Tensor
 
+from sglang.kernels.ops.quantization.fp8_kernel import fp8_dtype
+
 from sglang.srt.layers.quantization.kvfp4_tensor import E2M1_MAX
 from sglang.srt.utils.common import is_sm100_supported
 
@@ -556,6 +558,112 @@ class NVFP4KVCacheMethod(KVCacheQuantMethodBase):
         return fp4_size + scale_size + dq_size
 
 
+class Fp8KVCacheMethod(KVCacheQuantMethodBase):
+    """FP8 KV cache with direct fp8 storage.
+
+    Stores KV cache entries as fp8_e4m3fnuz (ROCm) using torch native
+    conversion.  Attention kernel consumes fp8 directly via tl.dot.
+    No dequant workspace needed.  No explicit scaling.
+    """
+
+    name = "fp8"
+    SCALE_BLOCK_SIZE = 1
+
+    def __init__(self, num_layers: int, device: str):
+        self.num_layers = num_layers
+        self.device = device
+        # Read by pool._quantized_scales(); fixed at 1.0 (no-op) since
+        # torch''s native fp8 conversion handles quantization internally.
+        self.k_scales_gpu = torch.ones(num_layers, dtype=torch.float32, device=device)
+        self.v_scales_gpu = torch.ones(num_layers, dtype=torch.float32, device=device)
+
+    def create_buffers(
+        self, size: int, head_num: int, head_dim: int, layer_num: int, device: str
+    ) -> dict:
+        m = size
+        n = head_num
+        k = head_dim
+
+        k_buffer = [
+            torch.zeros((m, n, k), dtype=fp8_dtype, device=device)
+            for _ in range(layer_num)
+        ]
+        v_buffer = [
+            torch.zeros((m, n, k), dtype=fp8_dtype, device=device)
+            for _ in range(layer_num)
+        ]
+        # Scale buffers: pool slot-move logic requires them, but they are
+        # never read (needs_plain_kv_dequant_read() == False).
+        k_scale_buffer = [
+            torch.ones((m, 1, 1), dtype=torch.float32, device=device)
+            for _ in range(layer_num)
+        ]
+        v_scale_buffer = [
+            torch.ones((m, 1, 1), dtype=torch.float32, device=device)
+            for _ in range(layer_num)
+        ]
+        dq_k_buffer = None
+        dq_v_buffer = None
+
+        return {
+            "k_buffer": k_buffer,
+            "v_buffer": v_buffer,
+            "k_scale_buffer": k_scale_buffer,
+            "v_scale_buffer": v_scale_buffer,
+            "dq_k_buffer": dq_k_buffer,
+            "dq_v_buffer": dq_v_buffer,
+            "store_dtype": fp8_dtype,
+        }
+
+    def quantize_and_store(
+        self,
+        k_buffer: Tensor,
+        v_buffer: Tensor,
+        k_scale_buffer: Optional[Tensor],
+        v_scale_buffer: Optional[Tensor],
+        loc: Tensor,
+        cache_k: Tensor,
+        cache_v: Tensor,
+        k_scale=None,
+        v_scale=None,
+    ) -> None:
+        # Native torch fp8 conversion (handles max-range clipping internally)
+        k_buffer[loc] = cache_k.contiguous().to(fp8_dtype)
+        v_buffer[loc] = cache_v.contiguous().to(fp8_dtype)
+
+    def dequantize_kv_tensor(
+        self,
+        fp8_tensor: Tensor,
+        scales: Tensor,
+        layer_id: int,
+        dtype: Optional[torch.dtype] = None,
+    ) -> Tensor:
+        # Not called in practice (needs_plain_kv_dequant_read() == False).
+        target_dtype = dtype or torch.bfloat16
+        return fp8_tensor.to(target_dtype)
+
+    def dequantize_prev_kv(
+        self,
+        k_fp8: Tensor,
+        k_scales: Tensor,
+        v_fp8: Tensor,
+        v_scales: Tensor,
+        layer_id: int,
+    ) -> tuple[Tensor, Tensor]:
+        return (
+            self.dequantize_kv_tensor(k_fp8, k_scales, layer_id),
+            self.dequantize_kv_tensor(v_fp8, v_scales, layer_id),
+        )
+
+    def kv_storage_dtype(self) -> torch.dtype:
+        return fp8_dtype
+
+    def compute_cell_size(
+        self, head_num: int, head_dim: int, num_layers: int, kv_size: int
+    ) -> int:
+        return head_num * head_dim * num_layers * 2 * kv_size
+
+
 class FP4MXBlock16KVCacheMethod(KVCacheQuantMethodBase):
     """Block-16 FP4 E2M1 single-level scaling.
 
@@ -787,6 +895,10 @@ KV_CACHE_ATTENTION_ACCESS_REGISTRY: dict[str, tuple[KVCacheAttentionAccess, ...]
         _plain(_PREFILL, _FP4_MX_PREFILL_BACKENDS, _FP4_MX_SCALE, _BF16),
         _plain(_DECODE, _FP4_MX_MHA_BACKENDS, _FP4_MX_SCALE, _BF16),
     ),
+    Fp8KVCacheMethod.name: (
+        _plain(_PREFILL, _ANY_BACKEND),
+        _plain(_DECODE, _ANY_BACKEND),
+    ),
 }
 
 
@@ -794,6 +906,8 @@ KV_CACHE_ATTENTION_ACCESS_REGISTRY: dict[str, tuple[KVCacheAttentionAccess, ...]
 KV_CACHE_QUANT_REGISTRY: dict[str, type[KVCacheQuantMethodBase]] = {
     "nvfp4": NVFP4KVCacheMethod,
     "fp4_mx_block16": FP4MXBlock16KVCacheMethod,
+    "fp8_e4m3": Fp8KVCacheMethod,
+    "fp8": Fp8KVCacheMethod,
 }
 
 
