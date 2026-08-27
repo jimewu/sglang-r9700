@@ -526,6 +526,11 @@ def _handle_frozen_kv_mtp(server_args: ServerArgs) -> None:
             "Frozen-KV MTP speculative decoding."
         )
 
+    if server_args.speculative_num_steps is None:
+        server_args.speculative_num_steps = 1
+    if server_args.speculative_eagle_topk is None:
+        server_args.speculative_eagle_topk = 1
+
 
 def _handle_eagle_family(server_args: ServerArgs) -> None:
     from sglang.srt.arg_groups.overrides import (
