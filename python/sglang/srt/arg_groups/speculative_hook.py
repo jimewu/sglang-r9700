@@ -530,6 +530,8 @@ def _handle_frozen_kv_mtp(server_args: ServerArgs) -> None:
         server_args.speculative_num_steps = 1
     if server_args.speculative_eagle_topk is None:
         server_args.speculative_eagle_topk = 1
+    if server_args.speculative_num_draft_tokens is None:
+        server_args.speculative_num_draft_tokens = 1
 
 
 def _handle_eagle_family(server_args: ServerArgs) -> None:
