@@ -138,6 +138,56 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
 
         self.logits_processor = LogitsProcessor(config)
 
+    def bind_frozen_kv_context(self, ctx: "FrozenKVMTPContext") -> None:
+        """Bind assistant attention to target-owned KV and suppress assistant KV writes.
+
+        Qwen3.5 MTP has a single full-attention layer (index 0) that reads
+        KV from the target model's last full-attention layer.
+        """
+        for assistant_logical, layer in enumerate(self.model.layers):
+            target_phys = ctx.get_physical_layer_id(assistant_logical)
+            layer.is_kv_shared_layer = True
+            layer.kv_shared_layer_index = target_phys
+            layer.attn.layer_id = target_phys
+            layer.layer_id = assistant_logical
+        self.kv_context = ctx
+
+    def build_frozen_kv_mtp_context(
+        self,
+        target_model,
+        target_token_to_kv_pool: "KVCache",
+    ) -> "FrozenKVMTPContext":
+        """Map the single MTP full-attention layer to the target''s last
+        full-attention layer (which owns the KV cache frozen for the draft)."""
+        from sglang.srt.speculative.frozen_kv_mtp_info import FrozenKVMTPContext
+
+        target_text = getattr(target_model, "config", target_model.config)
+        if hasattr(target_text, "text_config"):
+            target_text = target_text.text_config
+
+        # Find the last full-attention layer in the target model.
+        layer_types = getattr(target_text, "layer_types", None)
+        if layer_types is not None:
+            full_indices = [
+                i for i, t in enumerate(layer_types) if t == "full_attention"
+            ]
+            if not full_indices:
+                raise RuntimeError(
+                    "Qwen3.5 Frozen-KV MTP: target has no full-attention layers."
+                )
+            last_full = full_indices[-1]
+        else:
+            # All layers are full attention.
+            last_full = target_text.num_hidden_layers - 1
+
+        # The single MTP layer (index 0) maps to the last full-attention layer.
+        physical = {0: last_full}
+
+        return FrozenKVMTPContext(
+            target_token_to_kv_pool=target_token_to_kv_pool,
+            physical_layer_ids=physical,
+        )
+
     @classmethod
     def get_model_config_for_expert_location(cls, config):
         text_config = getattr(config, "text_config", config)
