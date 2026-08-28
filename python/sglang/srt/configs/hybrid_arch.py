@@ -46,6 +46,12 @@ def hybrid_lightning_config(model_config: ModelConfig):
 
 
 def hybrid_gdn_config(model_config: ModelConfig):
+    if model_config.is_draft_model:
+        # MTP draft models have only 1 full-attention layer, not a hybrid
+        # GDN configuration. Skip to avoid creating HybridLinearAttnBackend
+        # which would fail on layer_id routing (draft layer_id is set to the
+        # target physical layer for KV cache sharing).
+        return None
     config = model_config.hf_config.get_text_config()
     if isinstance(
         config,
