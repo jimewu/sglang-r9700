@@ -95,6 +95,11 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
         self.pre_fc_norm_hidden = RMSNorm_cls(config.hidden_size, config.rms_norm_eps)
         mtp_config = copy.deepcopy(config)
         mtp_config.num_hidden_layers = 1
+        # Truncate layer_types to prevent the draft model from selecting
+        # hybrid_linear_attn_backend (which assumes 64 layers). A 1-layer
+        # draft must use pure TritonAttnBackend (full_attention only).
+        if hasattr(mtp_config, "layer_types"):
+            mtp_config.layer_types = ["full_attention"]
         mtp_config.full_attention_interval = 1
         self.model = Qwen3_5ForCausalLM(
             mtp_config,
@@ -216,7 +221,6 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
             )
 
         try:
-            assert input_embeds is None
             input_embeds = forward_batch.mm_input_embeds
             if (
                 forward_batch.forward_mode.is_extend()
