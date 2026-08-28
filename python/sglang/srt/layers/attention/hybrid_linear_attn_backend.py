@@ -827,6 +827,12 @@ class HybridLinearAttnBackend(AttentionBackend):
     ) -> bool:
         if layer is not None:
             layer_id = layer.layer_id
+            # KV-shared layers (e.g. Frozen-KV MTP draft reading target KV)
+            # are always full-attention — their layer_id is set to the target
+            # physical layer for KV cache access, but routing must stay on
+            # the full-attention path.
+            if getattr(layer, "is_kv_shared_layer", False):
+                return True
         assert layer_id is not None, "either layer or layer_id must be provided"
         return layer_id in self.full_attn_layers
 
