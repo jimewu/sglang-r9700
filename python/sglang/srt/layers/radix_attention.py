@@ -124,6 +124,10 @@ class RadixAttention(nn.Module):
         self.sliding_window_size = sliding_window_size or -1
         self.is_cross_attention = is_cross_attention
         self.use_irope = use_irope
+        # KV-shared layers (e.g. Frozen-KV MTP draft reading target KV)
+        # are set dynamically by the model's bind_frozen_kv_context.
+        self.is_kv_shared_layer = False
+        self.kv_shared_layer_index = None
         self.k_scale = None
         self.v_scale = None
         self.k_scale_float = None

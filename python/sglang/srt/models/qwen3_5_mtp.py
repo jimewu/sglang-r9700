@@ -153,7 +153,13 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
             target_phys = ctx.get_physical_layer_id(assistant_logical)
             layer.is_kv_shared_layer = True
             layer.kv_shared_layer_index = target_phys
+            # Set layer_id to the target physical layer so the full-attention
+            # backend reads the correct KV cache slot. The routing check in
+            # HybridLinearAttnBackend._is_full_attn handles is_kv_shared_layer
+            # by returning True unconditionally (shared layers are always
+            # full-attention), so routing stays correct.
             layer.attn.layer_id = target_phys
+            layer.attn.is_kv_shared_layer = True
             layer.layer_id = assistant_logical
         self.kv_context = ctx
 
