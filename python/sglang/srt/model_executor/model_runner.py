@@ -2339,6 +2339,11 @@ class ModelRunner(ModelRunnerKVCacheMixin):
 
     @property
     def hybrid_gdn_config(self):
+        if self.is_draft_worker:
+            # MTP draft models have only 1 full-attention layer, not a hybrid
+            # GDN configuration. Skip to avoid creating HybridLinearAttnBackend
+            # which would fail on layer_id routing.
+            return None
         config = self.model_config.hf_config.get_text_config()
         if isinstance(
             config,
