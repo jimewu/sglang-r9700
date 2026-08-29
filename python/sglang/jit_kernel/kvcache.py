@@ -31,6 +31,14 @@ def _jit_kvcache_module(row_bytes: int) -> Module:
 @cache_once
 def can_use_store_cache(size: int) -> bool:
     logger = logging.getLogger(__name__)
+    # On ROCm/HIP the JIT store_cache launch fails with
+    # "the operation cannot be performed in the present state"
+    # (HIP error while launching the JIT kernel under ROCm 10).
+    # Fall back to the Triton/naive store paths until the JIT
+    # kernel is fixed for HIP.
+    import torch
+    if torch.version.hip is not None:
+        return False
     if size % 4 != 0:
         logger.warning(
             f"Unsupported row_bytes={size} for JIT KV-Cache kernel:"

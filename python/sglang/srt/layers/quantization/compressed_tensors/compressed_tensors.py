@@ -552,6 +552,33 @@ class CompressedTensorsConfig(QuantizationConfig):
                 self.quant_format == CompressionFormat.pack_quantized.value
                 and weight_quant.num_bits in WNA16_SUPPORTED_BITS
             ):
+                if _is_hip:
+                    # R9700 (gfx1201) uses the fused WMMA HIP scheme
+                    # (r9700_w4a16 custom op); other HIP targets fall back
+                    # to the Triton kernel.
+                    from sglang.srt.layers.quantization.compressed_tensors.schemes import (
+                        CompressedTensorsWNA16HIP,
+                    )
+                    try:
+                        props = torch.cuda.get_device_properties(0)
+                        gcn_arch = props.gcnArchName
+                    except Exception:
+                        gcn_arch = ""
+                    if "gfx1201" in gcn_arch:
+                        return CompressedTensorsWNA16HIP(
+                            num_bits=weight_quant.num_bits,
+                            strategy=weight_quant.strategy,
+                            group_size=weight_quant.group_size,
+                            symmetric=weight_quant.symmetric,
+                            actorder=weight_quant.actorder,
+                        )
+                    return CompressedTensorsWNA16(
+                        num_bits=weight_quant.num_bits,
+                        strategy=weight_quant.strategy,
+                        group_size=weight_quant.group_size,
+                        symmetric=weight_quant.symmetric,
+                        actorder=weight_quant.actorder,
+                    )
                 return CompressedTensorsWNA16(
                     num_bits=weight_quant.num_bits,
                     strategy=weight_quant.strategy,
