@@ -46,11 +46,8 @@ _is_cuda = is_cuda()
 if _is_cuda:
     from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack
 else:
-    # On ROCm/HIP, gptq_marlin_repack may not be available; use gptq_shuffle instead
-    try:
-        from sglang.jit_kernel.gptq_marlin_repack import gptq_marlin_repack
-    except ImportError:
-        gptq_marlin_repack = None
+    # gptq_marlin_repack is CUDA-specific (Marlin format). Not available on ROCm.
+    gptq_marlin_repack = None
 
 
 ScalarType, scalar_types = get_scalar_types()
@@ -254,13 +251,16 @@ class CompressedTensorsWNA16(CompressedTensorsLinearScheme):
             assert isinstance(x, BasevLLMParameter)
             permute_param_layout_(x, input_dim=0, output_dim=1, packed_dim=0)
             if gptq_marlin_repack is not None:
+                # Marlin repack is a CUDA-specific optimization for gptq_gemm.
+                # On ROCm/HIP, the model uses gptq_gemm directly with the
+                # standard AWQ format, so repack is not needed.
                 x.data = gptq_marlin_repack(
-                x.data.contiguous(),
-                perm=layer.g_idx_sort_indices,
-                size_k=c.partition_weight_shape[0],
-                size_n=c.partition_weight_shape[1],
-                num_bits=c.weight_type.size_bits,
-            )
+                    x.data.contiguous(),
+                    perm=layer.g_idx_sort_indices,
+                    size_k=c.partition_weight_shape[0],
+                    size_n=c.partition_weight_shape[1],
+                    num_bits=c.weight_type.size_bits,
+                )
             return x
 
         def transform_w_s(x):
